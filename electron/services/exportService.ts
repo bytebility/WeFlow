@@ -7,6 +7,7 @@ import ExcelJS from 'exceljs'
 import { ConfigService } from './config'
 import { wcdbService } from './wcdbService'
 import { imageDecryptService } from './imageDecryptService'
+import { chatService } from './chatService'
 
 // ChatLab 格式类型定义
 interface ChatLabHeader {
@@ -519,12 +520,50 @@ class ExportService {
   }
 
   /**
-   * 导出语音文件（暂不支持，需要额外的解码逻辑）
+   * 导出语音文件
    */
   private async exportVoice(msg: any, sessionId: string, mediaDir: string): Promise<MediaExportItem | null> {
-    // 语音消息需要额外的 silk 解码逻辑，暂时返回 null
-    // TODO: 实现语音导出
-    return null
+    try {
+      const voicesDir = path.join(mediaDir, 'media', 'voices')
+      if (!fs.existsSync(voicesDir)) {
+        fs.mkdirSync(voicesDir, { recursive: true })
+      }
+
+      const msgId = String(msg.localId)
+      const fileName = `voice_${msgId}.wav`
+      const destPath = path.join(voicesDir, fileName)
+
+      // 如果已存在则跳过
+      if (fs.existsSync(destPath)) {
+        console.log('[ExportService] 语音已存在:', destPath)
+        return {
+          relativePath: `media/voices/${fileName}`,
+          kind: 'voice'
+        }
+      }
+
+      console.log('[ExportService] 导出语音:', { localId: msg.localId, sessionId })
+
+      // 调用 chatService 获取语音数据
+      const voiceResult = await chatService.getVoiceData(sessionId, msgId)
+      if (!voiceResult.success || !voiceResult.data) {
+        console.log('[ExportService] 获取语音数据失败:', voiceResult.error)
+        return null
+      }
+
+      // voiceResult.data 是 base64 编码的 wav 数据
+      const wavBuffer = Buffer.from(voiceResult.data, 'base64')
+      fs.writeFileSync(destPath, wavBuffer)
+
+      console.log('[ExportService] 语音导出成功:', destPath)
+      return {
+        relativePath: `media/voices/${fileName}`,
+        kind: 'voice'
+      }
+    } catch (e) {
+      console.error('[ExportService] 导出语音失败:', e)
+      return null
+    }
   }
 
   /**
