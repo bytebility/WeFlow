@@ -16,6 +16,10 @@ interface ExportOptions {
   dateRange: { start: Date; end: Date } | null
   useAllTime: boolean
   exportAvatars: boolean
+  exportMedia: boolean
+  exportImages: boolean
+  exportVoices: boolean
+  exportEmojis: boolean
 }
 
 interface ExportResult {
@@ -46,7 +50,11 @@ function ExportPage() {
       end: new Date()
     },
     useAllTime: true,
-    exportAvatars: true
+    exportAvatars: true,
+    exportMedia: false,
+    exportImages: true,
+    exportVoices: true,
+    exportEmojis: true
   })
 
   const loadSessions = useCallback(async () => {
@@ -146,6 +154,10 @@ function ExportPage() {
       const exportOptions = {
         format: options.format,
         exportAvatars: options.exportAvatars,
+        exportMedia: options.exportMedia,
+        exportImages: options.exportMedia && options.exportImages,
+        exportVoices: options.exportMedia && options.exportVoices,
+        exportEmojis: options.exportMedia && options.exportEmojis,
         dateRange: options.useAllTime ? null : options.dateRange ? {
           start: Math.floor(options.dateRange.start.getTime() / 1000),
           // 将结束日期设置为当天的 23:59:59,以包含当天的所有消息
@@ -343,16 +355,89 @@ function ExportPage() {
           </div>
 
           <div className="setting-section">
-            <h3>导出头像</h3>
-            <div className="time-options">
-              <label className="checkbox-item">
+            <h3>媒体文件</h3>
+            <p className="setting-subtitle">导出图片/语音/表情并在记录内写入相对路径</p>
+            <div className="media-options-card">
+              <div className="media-switch-row">
+                <div className="media-switch-info">
+                  <span className="media-switch-title">导出媒体文件</span>
+                  <span className="media-switch-desc">会创建子文件夹并保存媒体资源</span>
+                </div>
+                <label className="switch">
+                  <input
+                    type="checkbox"
+                    checked={options.exportMedia}
+                    onChange={e => setOptions({ ...options, exportMedia: e.target.checked })}
+                  />
+                  <span className="slider"></span>
+                </label>
+              </div>
+              
+              <div className="media-option-divider"></div>
+              
+              <label className={`media-checkbox-row ${!options.exportMedia ? 'disabled' : ''}`}>
+                <div className="media-checkbox-info">
+                  <span className="media-checkbox-title">图片</span>
+                  <span className="media-checkbox-desc">已有文件直接复制，缺失时尝试解密</span>
+                </div>
                 <input
                   type="checkbox"
-                  checked={options.exportAvatars}
-                  onChange={e => setOptions({ ...options, exportAvatars: e.target.checked })}
+                  checked={options.exportImages}
+                  disabled={!options.exportMedia}
+                  onChange={e => setOptions({ ...options, exportImages: e.target.checked })}
                 />
-                <span>导出头像图片</span>
               </label>
+              
+              <div className="media-option-divider"></div>
+              
+              <label className={`media-checkbox-row ${!options.exportMedia ? 'disabled' : ''}`}>
+                <div className="media-checkbox-info">
+                  <span className="media-checkbox-title">语音</span>
+                  <span className="media-checkbox-desc">缺失时会解码生成 MP3</span>
+                </div>
+                <input
+                  type="checkbox"
+                  checked={options.exportVoices}
+                  disabled={!options.exportMedia}
+                  onChange={e => setOptions({ ...options, exportVoices: e.target.checked })}
+                />
+              </label>
+              
+              <div className="media-option-divider"></div>
+              
+              <label className={`media-checkbox-row ${!options.exportMedia ? 'disabled' : ''}`}>
+                <div className="media-checkbox-info">
+                  <span className="media-checkbox-title">表情</span>
+                  <span className="media-checkbox-desc">本地无缓存时尝试下载</span>
+                </div>
+                <input
+                  type="checkbox"
+                  checked={options.exportEmojis}
+                  disabled={!options.exportMedia}
+                  onChange={e => setOptions({ ...options, exportEmojis: e.target.checked })}
+                />
+              </label>
+            </div>
+          </div>
+
+          <div className="setting-section">
+            <h3>头像</h3>
+            <p className="setting-subtitle">可选导出头像索引，关闭则不下载头像</p>
+            <div className="media-options-card">
+              <div className="media-switch-row">
+                <div className="media-switch-info">
+                  <span className="media-switch-title">导出头像</span>
+                  <span className="media-switch-desc">用于展示发送者头像，可能会读取或下载头像文件</span>
+                </div>
+                <label className="switch">
+                  <input
+                    type="checkbox"
+                    checked={options.exportAvatars}
+                    onChange={e => setOptions({ ...options, exportAvatars: e.target.checked })}
+                  />
+                  <span className="slider"></span>
+                </label>
+              </div>
             </div>
           </div>
 

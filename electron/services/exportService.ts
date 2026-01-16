@@ -6,6 +6,7 @@ import { fileURLToPath } from 'url'
 import ExcelJS from 'exceljs'
 import { ConfigService } from './config'
 import { wcdbService } from './wcdbService'
+import { imageDecryptService } from './imageDecryptService'
 
 // ChatLab 格式类型定义
 interface ChatLabHeader {
@@ -65,6 +66,14 @@ export interface ExportOptions {
   dateRange?: { start: number; end: number } | null
   exportMedia?: boolean
   exportAvatars?: boolean
+  exportImages?: boolean
+  exportVoices?: boolean
+  exportEmojis?: boolean
+}
+
+interface MediaExportItem {
+  relativePath: string
+  kind: 'image' | 'voice' | 'emoji'
 }
 
 export interface ExportProgress {
@@ -389,6 +398,305 @@ class ExportService {
     return `${year}-${month}-${day} ${hours}:${minutes}:${seconds}`
   }
 
+  /**
+   * 导出媒体文件到指定目录
+   */
+  private async exportMediaForMessage(
+    msg: any,
+    sessionId: string,
+    mediaDir: string,
+    options: { exportImages?: boolean; exportVoices?: boolean; exportEmojis?: boolean }
+  ): Promise<MediaExportItem | null> {
+    const localType = msg.localType
+    
+    // 图片消息
+    if (localType === 3 && options.exportImages) {
+      const result = await this.exportImage(msg, sessionId, mediaDir)
+      if (result) {
+        console.log('[ExportService] 图片导出成功:', result.relativePath)
+      }
+      return result
+    }
+    
+    // 语音消息
+    if (localType === 34 && options.exportVoices) {
+      return this.exportVoice(msg, sessionId, mediaDir)
+    }
+    
+    // 动画表情
+    if (localType === 47 && options.exportEmojis) {
+      const result = await this.exportEmoji(msg, sessionId, mediaDir)
+      if (result) {
+        console.log('[ExportService] 表情导出成功:', result.relativePath)
+      }
+      return result
+    }
+    
+    return null
+  }
+
+  /**
+   * 导出图片文件
+   */
+  private async exportImage(msg: any, sessionId: string, mediaDir: string): Promise<MediaExportItem | null> {
+    try {
+      const imagesDir = path.join(mediaDir, 'media', 'images')
+      if (!fs.existsSync(imagesDir)) {
+        fs.mkdirSync(imagesDir, { recursive: true })
+      }
+
+      // 使用消息对象中已提取的字段
+      const imageMd5 = msg.imageMd5
+      const imageDatName = msg.imageDatName
+      
+      if (!imageMd5 && !imageDatName) {
+        console.log('[ExportService] 图片消息缺少 md5 和 datName:', msg.localId)
+        return null
+      }
+
+      console.log('[ExportService] 导出图片:', { localId: msg.localId, imageMd5, imageDatName, sessionId })
+
+      const result = await imageDecryptService.decryptImage({
+        sessionId,
+        imageMd5,
+        imageDatName,
+        force: false  // 先尝试缩略图
+      })
+
+      if (!result.success || !result.localPath) {
+        // 尝试获取缩略图
+        const thumbResult = await imageDecryptService.resolveCachedImage({
+          sessionId,
+          imageMd5,
+          imageDatName
+        })
+        if (!thumbResult.success || !thumbResult.localPath) {
+          return null
+        }
+        result.localPath = thumbResult.localPath
+      }
+
+      // 从 data URL 或 file URL 获取实际路径
+      let sourcePath = result.localPath
+      if (sourcePath.startsWith('data:')) {
+        // 是 data URL，需要保存为文件
+        const base64Data = sourcePath.split(',')[1]
+        const ext = this.getExtFromDataUrl(sourcePath)
+        const fileName = `${imageMd5 || imageDatName || msg.localId}${ext}`
+        const destPath = path.join(imagesDir, fileName)
+        
+        fs.writeFileSync(destPath, Buffer.from(base64Data, 'base64'))
+        
+        return {
+          relativePath: `media/images/${fileName}`,
+          kind: 'image'
+        }
+      } else if (sourcePath.startsWith('file://')) {
+        sourcePath = fileURLToPath(sourcePath)
+      }
+
+      // 复制文件
+      if (fs.existsSync(sourcePath)) {
+        const ext = path.extname(sourcePath) || '.jpg'
+        const fileName = `${imageMd5 || imageDatName || msg.localId}${ext}`
+        const destPath = path.join(imagesDir, fileName)
+        
+        if (!fs.existsSync(destPath)) {
+          fs.copyFileSync(sourcePath, destPath)
+        }
+        
+        return {
+          relativePath: `media/images/${fileName}`,
+          kind: 'image'
+        }
+      }
+
+      return null
+    } catch (e) {
+      console.error('[ExportService] 导出图片失败:', e)
+      return null
+    }
+  }
+
+  /**
+   * 导出语音文件（暂不支持，需要额外的解码逻辑）
+   */
+  private async exportVoice(msg: any, sessionId: string, mediaDir: string): Promise<MediaExportItem | null> {
+    // 语音消息需要额外的 silk 解码逻辑，暂时返回 null
+    // TODO: 实现语音导出
+    return null
+  }
+
+  /**
+   * 导出表情文件
+   */
+  private async exportEmoji(msg: any, sessionId: string, mediaDir: string): Promise<MediaExportItem | null> {
+    try {
+      const emojisDir = path.join(mediaDir, 'media', 'emojis')
+      if (!fs.existsSync(emojisDir)) {
+        fs.mkdirSync(emojisDir, { recursive: true })
+      }
+
+      // 使用消息对象中已提取的字段
+      const emojiUrl = msg.emojiCdnUrl
+      const emojiMd5 = msg.emojiMd5
+      
+      if (!emojiUrl && !emojiMd5) {
+        console.log('[ExportService] 表情消息缺少 url 和 md5, localId:', msg.localId, 'content:', msg.content?.substring(0, 200))
+        return null
+      }
+
+      console.log('[ExportService] 导出表情:', { localId: msg.localId, emojiMd5, emojiUrl: emojiUrl?.substring(0, 100) })
+
+      const key = emojiMd5 || String(msg.localId)
+      // 根据 URL 判断扩展名
+      let ext = '.gif'
+      if (emojiUrl) {
+        if (emojiUrl.includes('.png')) ext = '.png'
+        else if (emojiUrl.includes('.jpg') || emojiUrl.includes('.jpeg')) ext = '.jpg'
+      }
+      const fileName = `${key}${ext}`
+      const destPath = path.join(emojisDir, fileName)
+
+      // 如果已存在则跳过
+      if (fs.existsSync(destPath)) {
+        console.log('[ExportService] 表情已存在:', destPath)
+        return {
+          relativePath: `media/emojis/${fileName}`,
+          kind: 'emoji'
+        }
+      }
+
+      // 下载表情
+      if (emojiUrl) {
+        console.log('[ExportService] 开始下载表情:', emojiUrl)
+        const downloaded = await this.downloadFile(emojiUrl, destPath)
+        if (downloaded) {
+          console.log('[ExportService] 表情下载成功:', destPath)
+          return {
+            relativePath: `media/emojis/${fileName}`,
+            kind: 'emoji'
+          }
+        } else {
+          console.log('[ExportService] 表情下载失败:', emojiUrl)
+        }
+      }
+
+      return null
+    } catch (e) {
+      console.error('[ExportService] 导出表情失败:', e)
+      return null
+    }
+  }
+
+  /**
+   * 从消息内容提取图片 MD5
+   */
+  private extractImageMd5(content: string): string | undefined {
+    if (!content) return undefined
+    const match = /md5="([^"]+)"/i.exec(content)
+    return match?.[1]
+  }
+
+  /**
+   * 从消息内容提取图片 DAT 文件名
+   */
+  private extractImageDatName(content: string): string | undefined {
+    if (!content) return undefined
+    // 尝试从 cdnthumburl 或其他字段提取
+    const urlMatch = /cdnthumburl[^>]*>([^<]+)/i.exec(content)
+    if (urlMatch) {
+      const urlParts = urlMatch[1].split('/')
+      const last = urlParts[urlParts.length - 1]
+      if (last && last.includes('_')) {
+        return last.split('_')[0]
+      }
+    }
+    return undefined
+  }
+
+  /**
+   * 从消息内容提取表情 URL
+   */
+  private extractEmojiUrl(content: string): string | undefined {
+    if (!content) return undefined
+    // 参考 echotrace 的正则：cdnurl\s*=\s*['"]([^'"]+)['"] 
+    const attrMatch = /cdnurl\s*=\s*['"]([^'"]+)['"]/i.exec(content)
+    if (attrMatch) {
+      // 解码 &amp; 等实体
+      let url = attrMatch[1].replace(/&amp;/g, '&')
+      // URL 解码
+      try {
+        if (url.includes('%')) {
+          url = decodeURIComponent(url)
+        }
+      } catch {}
+      return url
+    }
+    // 备用：尝试 XML 标签形式
+    const tagMatch = /cdnurl[^>]*>([^<]+)/i.exec(content)
+    return tagMatch?.[1]
+  }
+
+  /**
+   * 从消息内容提取表情 MD5
+   */
+  private extractEmojiMd5(content: string): string | undefined {
+    if (!content) return undefined
+    const match = /md5="([^"]+)"/i.exec(content) || /<md5>([^<]+)<\/md5>/i.exec(content)
+    return match?.[1]
+  }
+
+  /**
+   * 从 data URL 获取扩展名
+   */
+  private getExtFromDataUrl(dataUrl: string): string {
+    if (dataUrl.includes('image/png')) return '.png'
+    if (dataUrl.includes('image/gif')) return '.gif'
+    if (dataUrl.includes('image/webp')) return '.webp'
+    return '.jpg'
+  }
+
+  /**
+   * 下载文件
+   */
+  private async downloadFile(url: string, destPath: string): Promise<boolean> {
+    return new Promise((resolve) => {
+      try {
+        const protocol = url.startsWith('https') ? https : http
+        const request = protocol.get(url, { timeout: 30000 }, (response) => {
+          if (response.statusCode === 301 || response.statusCode === 302) {
+            const redirectUrl = response.headers.location
+            if (redirectUrl) {
+              this.downloadFile(redirectUrl, destPath).then(resolve)
+              return
+            }
+          }
+          if (response.statusCode !== 200) {
+            resolve(false)
+            return
+          }
+          const fileStream = fs.createWriteStream(destPath)
+          response.pipe(fileStream)
+          fileStream.on('finish', () => {
+            fileStream.close()
+            resolve(true)
+          })
+          fileStream.on('error', () => {
+            resolve(false)
+          })
+        })
+        request.on('error', () => resolve(false))
+        request.on('timeout', () => {
+          request.destroy()
+          resolve(false)
+        })
+      } catch {
+        resolve(false)
+      }
+    })
+  }
+
   private async collectMessages(
     sessionId: string,
     cleanedMyWxid: string,
@@ -426,6 +734,7 @@ class ExportService {
           const senderUsername = row.sender_username || ''
           const isSendRaw = row.computed_is_send ?? row.is_send ?? '0'
           const isSend = parseInt(isSendRaw, 10) === 1
+          const localId = parseInt(row.local_id || row.localId || '0', 10)
 
           const actualSender = isSend ? cleanedMyWxid : (senderUsername || sessionId)
           const memberInfo = await this.getContactInfo(actualSender)
@@ -439,12 +748,35 @@ class ExportService {
             })
           }
 
+          // 提取媒体相关字段
+          let imageMd5: string | undefined
+          let imageDatName: string | undefined
+          let emojiCdnUrl: string | undefined
+          let emojiMd5: string | undefined
+          
+          if (localType === 3 && content) {
+            // 图片消息
+            imageMd5 = this.extractImageMd5(content)
+            imageDatName = this.extractImageDatName(content)
+            console.log('[ExportService] 提取图片字段:', { localId, imageMd5, imageDatName })
+          } else if (localType === 47 && content) {
+            // 动画表情
+            emojiCdnUrl = this.extractEmojiUrl(content)
+            emojiMd5 = this.extractEmojiMd5(content)
+            console.log('[ExportService] 提取表情字段:', { localId, emojiMd5, emojiCdnUrl: emojiCdnUrl?.substring(0, 100) })
+          }
+
           rows.push({
+            localId,
             createTime,
             localType,
             content,
             senderUsername: actualSender,
-            isSend
+            isSend,
+            imageMd5,
+            imageDatName,
+            emojiCdnUrl,
+            emojiMd5
           })
 
           if (firstTime === null || createTime < firstTime) firstTime = createTime
@@ -1007,10 +1339,6 @@ class ExportService {
       worksheet.getRow(currentRow).height = 20
       currentRow++
 
-      // 空行
-      worksheet.getRow(currentRow).height = 10
-      currentRow++
-
       // 表头行
       const headers = ['序号', '时间', '发送者昵称', '发送者微信ID', '发送者备注', '发送者身份', '消息类型', '内容']
       const headerRow = worksheet.getRow(currentRow)
@@ -1042,8 +1370,31 @@ class ExportService {
       // 填充数据
       const sortedMessages = collected.rows.sort((a, b) => a.createTime - b.createTime)
       
+      // 媒体导出设置
+      const exportMediaEnabled = options.exportImages || options.exportVoices || options.exportEmojis
+      const sessionDir = path.dirname(outputPath)  // 会话目录，用于媒体导出
+      
+      // 媒体导出缓存
+      const mediaCache = new Map<string, MediaExportItem | null>()
+      
       for (let i = 0; i < sortedMessages.length; i++) {
         const msg = sortedMessages[i]
+        
+        // 导出媒体文件
+        let mediaItem: MediaExportItem | null = null
+        if (exportMediaEnabled) {
+          const mediaKey = `${msg.localType}_${msg.localId}`
+          if (mediaCache.has(mediaKey)) {
+            mediaItem = mediaCache.get(mediaKey) || null
+          } else {
+            mediaItem = await this.exportMediaForMessage(msg, sessionId, sessionDir, {
+              exportImages: options.exportImages,
+              exportVoices: options.exportVoices,
+              exportEmojis: options.exportEmojis
+            })
+            mediaCache.set(mediaKey, mediaItem)
+          }
+        }
         
         // 确定发送者信息
         let senderRole: string
@@ -1092,6 +1443,22 @@ class ExportService {
         const row = worksheet.getRow(currentRow)
         row.height = 24
         
+        // 确定内容：如果有媒体文件导出成功则显示相对路径，否则显示解析后的内容
+        const contentValue = mediaItem 
+          ? mediaItem.relativePath 
+          : (this.parseMessageContent(msg.content, msg.localType) || '')
+        
+        // 调试日志
+        if (msg.localType === 3 || msg.localType === 47) {
+          console.log('[ExportService] 媒体消息填充表格:', {
+            localId: msg.localId,
+            localType: msg.localType,
+            hasMediaItem: !!mediaItem,
+            mediaRelativePath: mediaItem?.relativePath,
+            contentValue: contentValue?.substring(0, 100)
+          })
+        }
+        
         worksheet.getCell(currentRow, 1).value = i + 1
         worksheet.getCell(currentRow, 2).value = this.formatTimestamp(msg.createTime)
         worksheet.getCell(currentRow, 3).value = senderNickname
@@ -1099,7 +1466,7 @@ class ExportService {
         worksheet.getCell(currentRow, 5).value = senderRemark
         worksheet.getCell(currentRow, 6).value = senderRole
         worksheet.getCell(currentRow, 7).value = this.getMessageTypeName(msg.localType)
-        worksheet.getCell(currentRow, 8).value = this.parseMessageContent(msg.content, msg.localType) || ''
+        worksheet.getCell(currentRow, 8).value = contentValue
         
         // 设置每个单元格的样式
         for (let col = 1; col <= 8; col++) {
@@ -1188,10 +1555,17 @@ class ExportService {
         })
 
         const safeName = sessionInfo.displayName.replace(/[<>:"/\\|?*]/g, '_')
+        
+        // 为每个会话创建单独的文件夹
+        const sessionDir = path.join(outputDir, safeName)
+        if (!fs.existsSync(sessionDir)) {
+          fs.mkdirSync(sessionDir, { recursive: true })
+        }
+        
         let ext = '.json'
         if (options.format === 'chatlab-jsonl') ext = '.jsonl'
         else if (options.format === 'excel') ext = '.xlsx'
-        const outputPath = path.join(outputDir, `${safeName}${ext}`)
+        const outputPath = path.join(sessionDir, `${safeName}${ext}`)
 
         let result: { success: boolean; error?: string }
         if (options.format === 'json') {
